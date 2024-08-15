@@ -1,11 +1,13 @@
 #define MAX_ENTITY 1024
+#define MAX_DRAW_LAYER 16
 
 typedef enum EntityType
 {
 	entt_nil = 0,
 	entt_player = 1,
-	entt_noninteractable = 2,
-	entt_interactable = 3,
+	entt_platform = 2,
+	entt_noninteractable = 3,
+	entt_interactable = 4,
 } EntityType;
 
 typedef enum InteractableType
@@ -20,29 +22,41 @@ typedef struct EntityData
 	InteractableType interactable_type;
 } EntityData;
 
-typedef struct Entity
+typedef struct Sprite
+{
+	Gfx_Image* image;
+	u8 draw_layer;
+} Sprite;
+
+typedef struct Transform
 {
 	Vector2 pos;
 	Vector2 size;
+} Transform;
+
+typedef struct Entity
+{
+	Transform transform;
 	bool is_valid;
-	Gfx_Image sprite;
+	Sprite sprite;
 	EntityData data;
 } Entity;
 
 typedef struct GameWorld
 {
 	Entity entity_list[MAX_ENTITY];
+	Entity* draw_list[MAX_ENTITY];
 } GameWorld;
 
 GameWorld* game_world = 0;
 
-Entity* create_entity()
+Entity* create_entity(int layer)
 {
 	Entity* entity_found = 0;
-	for(int i = 0; i < MAX_ENTITY; i++)
+	const int layer_size = MAX_ENTITY / MAX_DRAW_LAYER;
+	for(int i = layer_size * layer; i < layer_size * (layer + 1); i++)
 	{
 		Entity* existing_entity = &game_world->entity_list[i];
-		// log("Attempt#%i to find ram slot for entity.\nis_valid:%i\nram location:%p\n",i,existing_entity->is_valid,existing_entity);
 		if(!existing_entity->is_valid)
 		{
 			entity_found = existing_entity;
@@ -54,15 +68,54 @@ Entity* create_entity()
 	return entity_found;
 }
 
+bool check_collision(Transform* a, Transform* b) {
+    // Check if there's no overlap along the X-axis
+    if (a->pos.x + a->size.x < b->pos.x || b->pos.x + b->size.x < a->pos.x) {
+        return false;
+    }
+    // Check if there's no overlap along the Y-axis
+    if (a->pos.y + a->size.y < b->pos.y || b->pos.y + b->size.y < a->pos.y) {
+        return false;
+    }
+    // If both axes overlap, a collision is happening
+    return true;
+}
+
 void entity_destroy(Entity* selected_entity)
 {
 	selected_entity->is_valid = false;
 	memset(selected_entity, 0, sizeof(Entity));
 }
 
+void resolve_boundry_collision(Transform* trans,Vector2 velocity, Vector2 center, Vector2 half_size)
+{
+	float32 left_boundary = center.x - half_size.x;
+    float32 right_boundary = center.x + half_size.x;
+    float32 top_boundary = center.y + half_size.y;
+    float32 bottom_boundary = center.y - half_size.y;
+
+	if (trans->pos.x < left_boundary) {
+        trans->pos.x = left_boundary;
+        velocity.x = 0;
+    }
+    else if (trans->pos.x > right_boundary) {
+        trans->pos.x = right_boundary;
+        velocity.x = 0;
+    }
+
+    
+    if (trans->pos.y < bottom_boundary) {
+        trans->pos.y = bottom_boundary;
+        velocity.y = 0;
+    }
+    else if (trans->pos.y > top_boundary) {
+        trans->pos.y = top_boundary;
+        velocity.y = 0;
+    }
+}
+
 int entry(int argc, char **argv) 
 {
-	
 	window.title = STR("GameIsGame");
 	window.scaled_width = 1280; // We need to set the scaled size if we want to handle system scaling (DPI)
 	window.scaled_height = 720; 
@@ -71,27 +124,44 @@ int entry(int argc, char **argv)
 	window.clear_color = hex_to_rgba(0x000000ff);
 
 	game_world = alloc(get_heap_allocator(), sizeof(GameWorld));
+	// game_world->entity_list = alloc(get_heap_allocator(), sizeof(Entity[MAX_ENTITY]) * MAX_DRAW_LAYER);
+	
+	for(int i = 0; i < MAX_ENTITY; i++)
+	{
+		game_world->entity_list[i].is_valid = false;
+	}
 
 	bool pressing = false;
 	Vector2 mvec = v2(0,0);
 
 	Gfx_Image* spr_player = load_image_from_disk(fixed_string("player.png"),get_heap_allocator());
+	Gfx_Image* spr_rock = load_image_from_disk(fixed_string("Asteroid.png"),get_heap_allocator());
+	Gfx_Image* spr_platform = load_image_from_disk(fixed_string("Platform.png"), get_heap_allocator());
 	assert(spr_player, "YOOO BUGG!!");
 
 	float64 last_time = os_get_current_time_in_seconds();
 	float64 delta_t;
 
-	float zoom = 4.324; // 0.23125
+	const float virtual_width = 296.0;
+	const float virtual_height = 187.0;
+	float zoom_margin = 2;
+	float zoom = (window.width / virtual_width) + (float) zoom_margin; // 0.23125
 
-	Entity* ent_player = create_entity();
+	Entity* ent_player = create_entity(5);
+	Entity* ent_platform = create_entity(4);
 
-	for(int i = 0; i < 10; i++)
-	{
-		Entity* en = entity_create();
-		en->pos = v2(i * 10.0, 0.0);
-	}
+	ent_player->transform.size = v2(8.0,16.0);
+	ent_player->sprite.draw_layer = 5;
+	ent_player->sprite.image = spr_player;
+	ent_player->transform.pos = v2(50.0,50.0);
 
-	// Vector2 player_pos = v2(0,0);
+	ent_platform->transform.size = v2(108.0, 76.0);
+	ent_platform->sprite.image = spr_platform;
+	ent_platform->sprite.draw_layer = 5;
+	ent_platform->transform.pos = v2(0 - (ent_platform->transform.size.x / 2), 0 - (ent_platform->transform.size.y / 2));//v2(window.height / 2 , window.width / 2 );
+	ent_platform->data.entity_type = entt_platform;
+
+
 
 	while (!window.should_close) {
 		float64 now = os_get_current_time_in_seconds();
@@ -123,18 +193,58 @@ int entry(int argc, char **argv)
 
 		input_axis = v2_normalize(input_axis);
 
-		ent_player->pos = v2_add(ent_player->pos, v2_mulf(input_axis, 45.0 * delta_t));
+		Vector2 velocity_v = v2_mulf(input_axis, 45.0 * delta_t);
+		Vector2 target_v = v2_add(ent_player->transform.pos, velocity_v);
+		
 
-		Matrix4 xform = m4_scalar(1.0);
-		xform = m4_translate(xform, v3(ent_player->pos.x, ent_player->pos.y, 0));
-		draw_image_xform(spr_player, xform, v2(8.0,16.0), COLOR_WHITE);
+		// if(check_collision(ent_player, ent_platform))
+		// {
+		// 	target_v.x -= velocity_v.x;
+		// }
+
+		int kaka = 0;
+		for(int i = 0; i < MAX_ENTITY; i++)
+		{
+			Entity* en = &game_world->entity_list[i];
+			if(en->is_valid && en != ent_player)
+			{
+				kaka++;
+				log("Entity size:(%f),(%f)   type:%i",en->transform.size.x,en->transform.size.y,en->data.entity_type);
+				switch(en->data.entity_type)
+				{
+					case entt_platform:
+						Vector2 square_center = v2(ent_platform->transform.pos.x + 
+							(ent_platform->transform.size.x / 2), ent_platform->transform.pos.y + 
+							(ent_platform->transform.size.y / 2));
+						Vector2 half_size = v2_divf(ent_platform->transform.size,2.0);
+
+						resolve_boundry_collision(&ent_player->transform,velocity_v,square_center, half_size);
+
+					break;
+
+					default:
+						Transform tmp_t = ent_player->transform;
+						tmp_t.pos.x += velocity_v.x;
+						bool x_coll_align = check_collision(&tmp_t, en);
+						tmp_t = ent_player->transform;
+						tmp_t.pos.y += velocity_v.y;
+						bool y_coll_align = check_collision(&tmp_t, en);
+
+						if(x_coll_align) target_v.x = ent_player->transform.pos.x;
+						if(y_coll_align) target_v.y = ent_player->transform.pos.y;
+					break;
+				}
+			}
+		}
+
+		ent_player->transform.pos = target_v;
 
 		for(int i = 0; i < MAX_ENTITY; i++)
 		{
 			Entity* en = &game_world->entity_list[i];
 			if(en->is_valid)
 			{
-				draw_image(en->sprite, en->pos, en->size, COLOR_WHITE);
+				draw_image(en->sprite.image, en->transform.pos, en->transform.size, COLOR_WHITE);
 			}
 		}
 
